@@ -1,0 +1,32 @@
+{
+  "name": "platform-boilerplate",
+  "type": "module",
+  "private": true,
+  "packageManager": "bun@1.2.5",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "autostart:install": "powershell -ExecutionPolicy Bypass -File scripts/install-autostart.ps1",
+    "autostart:uninstall": "powershell -ExecutionPolicy Bypass -File scripts/uninstall-autostart.ps1",
+    "bot:check": "powershell -ExecutionPolicy Bypass -File scripts/check-bot.ps1",
+    "lint": "bun run --cwd apps/backend lint && bun run --cwd apps/frontend lint",
+    "bot:backend": "powershell -ExecutionPolicy Bypass -File scripts/dev-backend.ps1",
+    "dev": "bun run --cwd apps/shared build && bunx concurrently \"powershell -NoProfile -Command bun run --cwd apps/backend start:dev\" \"powershell -NoProfile -Command bun run --cwd apps/frontend dev\"",
+    "build": "bun run --cwd apps/shared build && bun run --cwd apps/backend build && bun run --cwd apps/frontend build",
+    "start": "bunx concurrently \"powershell -NoProfile -Command bun run --cwd apps/backend start:prod\" \"powershell -NoProfile -Command bun run --cwd apps/frontend preview\"",
+    "db:up": "docker-compose up -d",
+    "db:down": "docker-compose down",
+    "format": "bun run --cwd apps/backend format && bun run --cwd apps/frontend format"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "concurrently": "^9.1.2"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.66.1"
+  }
+}

@@ -1,0 +1,51 @@
+services:
+  - type: web
+    name: reddit-insight-api
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: bun install --frozen-lockfile && bun run --cwd apps/shared build && bun run --cwd apps/backend build
+    startCommand: bun run --cwd apps/backend start:prod
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: BUN_VERSION
+        value: 1.2.5
+      - key: SCRAPING_PROVIDER
+        value: decodo
+      - key: LLM_PROVIDER
+        value: deepseek
+      - key: DEEPSEEK_BASE_URL
+        value: https://api.deepseek.com
+      - key: FEISHU_ENABLED
+        value: false
+      - key: MONGODB_URI
+        sync: false
+      - key: DECODO_BASIC_AUTH_TOKEN
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: APP_ACCESS_PASSWORD
+        sync: false
+
+  - type: web
+    name: reddit-insight-web
+    runtime: static
+    plan: free
+    buildCommand: bun install --frozen-lockfile && bun run --cwd apps/shared build && bun run --cwd apps/frontend build
+    staticPublishPath: apps/frontend/dist
+    envVars:
+      - key: BUN_VERSION
+        value: 1.2.5
+      - key: PUBLIC_API_BASE_URL
+        fromService:
+          type: web
+          name: reddit-insight-api
+          property: host
+      - key: PUBLIC_APP_PASSWORD_REQUIRED
+        value: true
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
