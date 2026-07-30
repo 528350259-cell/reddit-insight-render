@@ -17,7 +17,8 @@
     "start": "bunx concurrently \"powershell -NoProfile -Command bun run --cwd apps/backend start:prod\" \"powershell -NoProfile -Command bun run --cwd apps/frontend preview\"",
     "db:up": "docker-compose up -d",
     "db:down": "docker-compose down",
-    "format": "bun run --cwd apps/backend format && bun run --cwd apps/frontend format"
+    "format": "bun run --cwd apps/backend format && bun run --cwd apps/frontend format",
+    "build:netlify": "bun run build"
   },
   "devDependencies": {
     "@types/bun": "latest",
