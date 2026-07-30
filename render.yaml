@@ -2,7 +2,6 @@ services:
   - type: web
     name: reddit-insight-api
     runtime: node
-    plan: free
     region: oregon
     buildCommand: bun install --frozen-lockfile && bun run --cwd apps/shared build && bun run --cwd apps/backend build
     startCommand: bun run --cwd apps/backend start:prod
@@ -32,7 +31,6 @@ services:
   - type: web
     name: reddit-insight-web
     runtime: static
-    plan: free
     buildCommand: bun install --frozen-lockfile && bun run --cwd apps/shared build && bun run --cwd apps/frontend build
     staticPublishPath: apps/frontend/dist
     envVars:
