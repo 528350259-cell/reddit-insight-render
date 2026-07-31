@@ -11,6 +11,12 @@ import { DecodoService } from './features/decodo/decodo.service';
 import { RedditDirectService } from './features/reddit-source/reddit-direct.service';
 import { RedditSourceService } from './features/reddit-source/reddit-source.service';
 import { TrackerService } from './features/tracker/tracker.service';
+import {
+  AnalysisTask,
+  AnalysisTaskSchema,
+  type AnalysisTaskKind,
+} from './features/tracker/analysis-task.schema';
+import { AnalysisTaskService } from './features/tracker/analysis-task.service';
 
 interface NetlifyEvent {
   httpMethod: string;
@@ -36,6 +42,7 @@ let servicesPromise: Promise<{
   trackerService: TrackerService;
   queriesService: QueriesService;
   settingsService: SettingsService;
+  analysisTaskService: AnalysisTaskService;
 }> | null = null;
 
 function json(statusCode: number, body: unknown): NetlifyResponse {
@@ -101,6 +108,9 @@ async function getServices() {
     const SettingsModel =
       mongoose.models[Settings.name] ?? mongoose.model(Settings.name, SettingsSchema);
     const QueryModel = mongoose.models[Query.name] ?? mongoose.model(Query.name, QuerySchema);
+    const AnalysisTaskModel =
+      mongoose.models[AnalysisTask.name] ??
+      mongoose.model(AnalysisTask.name, AnalysisTaskSchema);
 
     const configService = getEnvConfigService();
     const settingsService = new SettingsService(SettingsModel as never, configService);
@@ -114,8 +124,12 @@ async function getServices() {
     );
     const queriesService = new QueriesService(QueryModel as never);
     const trackerService = new TrackerService(llmService, redditSourceService, queriesService);
+    const analysisTaskService = new AnalysisTaskService(
+      AnalysisTaskModel as never,
+      trackerService,
+    );
 
-    return { trackerService, queriesService, settingsService };
+    return { trackerService, queriesService, settingsService, analysisTaskService };
   })();
 
   return servicesPromise;
@@ -136,6 +150,41 @@ function errorResponse(error: unknown): NetlifyResponse {
   });
 }
 
+function getRequestOrigin(event: NetlifyEvent): string {
+  const configuredOrigin = process.env.NETLIFY_TASK_ORIGIN?.trim();
+  if (configuredOrigin) return configuredOrigin.replace(/\/$/, '');
+
+  const host = event.headers['x-forwarded-host'] ?? event.headers.host;
+  const protocol = event.headers['x-forwarded-proto'] ?? 'https';
+  if (host) return `${protocol}://${host}`;
+
+  const deployUrl = process.env.DEPLOY_PRIME_URL ?? process.env.URL;
+  if (!deployUrl) throw new Error('Unable to determine the Netlify deployment URL');
+  return deployUrl.replace(/\/$/, '');
+}
+
+async function dispatchBackgroundTask(event: NetlifyEvent, taskId: string): Promise<void> {
+  const response = await fetch(`${getRequestOrigin(event)}/.netlify/functions/analysis-background`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(process.env.APP_ACCESS_PASSWORD
+        ? { 'x-app-password': process.env.APP_ACCESS_PASSWORD }
+        : {}),
+    },
+    body: JSON.stringify({ taskId }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Background task dispatch failed with status ${response.status}`);
+  }
+}
+
+export async function runAnalysisTask(taskId: string) {
+  const { analysisTaskService } = await getServices();
+  return analysisTaskService.run(taskId);
+}
+
 export async function handler(event: NetlifyEvent): Promise<NetlifyResponse> {
   if (event.httpMethod === 'OPTIONS') return empty(204);
 
@@ -150,7 +199,27 @@ export async function handler(event: NetlifyEvent): Promise<NetlifyResponse> {
   }
 
   try {
-    const { trackerService, queriesService, settingsService } = await getServices();
+    const { trackerService, queriesService, settingsService, analysisTaskService } =
+      await getServices();
+
+    const createTaskMatch = path.match(/^\/tracker\/tasks\/(plan|analyze)$/);
+    if (event.httpMethod === 'POST' && createTaskMatch) {
+      const kind = createTaskMatch[1] as AnalysisTaskKind;
+      const task = await analysisTaskService.create(kind, parseBody(event) as never);
+      try {
+        await dispatchBackgroundTask(event, task.id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await analysisTaskService.fail(task.id, message);
+        throw error;
+      }
+      return json(202, task);
+    }
+
+    const taskMatch = path.match(/^\/tracker\/tasks\/([^/]+)$/);
+    if (event.httpMethod === 'GET' && taskMatch) {
+      return json(200, await analysisTaskService.findOne(taskMatch[1]));
+    }
 
     if (event.httpMethod === 'POST' && path === '/tracker/plan') {
       return json(200, await trackerService.generatePlan(parseBody(event) as never));

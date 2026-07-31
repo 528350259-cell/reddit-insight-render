@@ -1,15 +1,50 @@
-import { Controller, Post, Body, Res, HttpCode, HttpStatus, Logger } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Get,
+  Param,
+  Body,
+  Res,
+  HttpCode,
+  HttpStatus,
+  Logger,
+} from '@nestjs/common';
 import { Response } from 'express';
 import { TrackerService } from './tracker.service';
 import type { OnProgress } from './tracker.service';
 import { GeneratePlanDto } from './dto/generate-plan.dto';
 import { AnalyzePlanDto } from './dto/analyze-plan.dto';
+import { AnalysisTaskService } from './analysis-task.service';
 
 @Controller('tracker')
 export class TrackerController {
   private readonly logger = new Logger(TrackerController.name);
 
-  constructor(private readonly trackerService: TrackerService) {}
+  constructor(
+    private readonly trackerService: TrackerService,
+    private readonly analysisTaskService: AnalysisTaskService,
+  ) {}
+
+  @Post('tasks/plan')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async createPlanTask(@Body() dto: GeneratePlanDto) {
+    const task = await this.analysisTaskService.create('plan', dto);
+    setImmediate(() => void this.analysisTaskService.run(task.id));
+    return task;
+  }
+
+  @Post('tasks/analyze')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async createAnalysisTask(@Body() dto: AnalyzePlanDto) {
+    const task = await this.analysisTaskService.create('analyze', dto);
+    setImmediate(() => void this.analysisTaskService.run(task.id));
+    return task;
+  }
+
+  @Get('tasks/:id')
+  async getTask(@Param('id') id: string) {
+    return this.analysisTaskService.findOne(id);
+  }
 
   /**
    * POST /tracker/plan

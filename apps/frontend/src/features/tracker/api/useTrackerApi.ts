@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import type { AnalyzeResult, ScrapingPlan, TimeRange } from '../tracker.types';
 
@@ -17,111 +17,85 @@ interface AnalyzePlanInput {
   maxPosts?: number;
 }
 
-type ProgressEvent =
-  | { type: 'started'; totalTasks: number; queries: number; subreddits: number }
-  | { type: 'task_complete'; completed: number; total: number; label: string }
-  | { type: 'deep_diving'; posts: number }
-  | { type: 'summarizing' }
-  | { type: 'saving' };
+interface AsyncTask<TResult> {
+  id: string;
+  kind: 'plan' | 'analyze';
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  stage: string;
+  progress: {
+    completed?: number;
+    total?: number;
+    percent?: number;
+    message?: string;
+    detail?: string;
+  };
+  result?: TResult;
+  error?: string;
+}
 
 export type ProgressState = {
   completed: number;
   total: number;
+  percent: number;
   label: string;
   sublabel?: string;
 };
 
-const generatePlan = async (dto: GeneratePlanInput): Promise<ScrapingPlan> => {
-  const { data } = await api.post<ScrapingPlan>('/tracker/plan', dto);
-  return data;
-};
-
-export const useGeneratePlanMutation = () => useMutation({ mutationFn: generatePlan });
-
-async function analyzePlanRequest(
-  dto: AnalyzePlanInput,
-  onProgress: (event: ProgressEvent) => void,
-  signal?: AbortSignal,
-): Promise<AnalyzeResult> {
-  onProgress({
-    type: 'started',
-    totalTasks: dto.queries.length + dto.subreddits.length,
-    queries: dto.queries.length,
-    subreddits: dto.subreddits.length,
+const wait = (milliseconds: number, signal: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const timer = window.setTimeout(resolve, milliseconds);
+    signal.addEventListener(
+      'abort',
+      () => {
+        window.clearTimeout(timer);
+        reject(new DOMException('Polling cancelled', 'AbortError'));
+      },
+      { once: true },
+    );
   });
 
-  const { data } = await api.post<AnalyzeResult>('/tracker/analyze', dto, { signal });
-  return data;
+async function submitAndPoll<TInput, TResult>(
+  kind: 'plan' | 'analyze',
+  input: TInput,
+  onTask: (task: AsyncTask<TResult>) => void,
+  signal: AbortSignal,
+): Promise<TResult> {
+  const { data: created } = await api.post<AsyncTask<TResult>>(
+    `/tracker/tasks/${kind}`,
+    input,
+    { signal },
+  );
+  onTask(created);
+
+  while (!signal.aborted) {
+    await wait(2000, signal);
+    const { data: task } = await api.get<AsyncTask<TResult>>(
+      `/tracker/tasks/${created.id}`,
+      { signal },
+    );
+    onTask(task);
+
+    if (task.status === 'completed') {
+      if (!task.result) throw new Error('任务已完成，但服务端没有返回结果。');
+      return task.result;
+    }
+
+    if (task.status === 'failed') {
+      throw new Error(task.error || '后台任务执行失败，请稍后重试。');
+    }
+  }
+
+  throw new DOMException('Polling cancelled', 'AbortError');
 }
 
-export function useAnalyzePlanStream() {
-  const queryClient = useQueryClient();
+function useAsyncTaskMutation<TInput, TResult>(
+  kind: 'plan' | 'analyze',
+  onTask?: (task: AsyncTask<TResult>) => void,
+) {
   const [isPending, setIsPending] = useState(false);
   const [isError, setIsError] = useState(false);
   const [error, setError] = useState<Error | null>(null);
-  const [progress, setProgress] = useState<ProgressState | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-
-  const mutate = useCallback(
-    (dto: AnalyzePlanInput, callbacks: { onSuccess?: (result: AnalyzeResult) => void } = {}) => {
-      abortRef.current?.abort();
-      const ac = new AbortController();
-      abortRef.current = ac;
-
-      setIsPending(true);
-      setIsError(false);
-      setError(null);
-      setProgress({ completed: 0, total: 0, label: '正在连接分析服务...' });
-
-      analyzePlanRequest(
-        dto,
-        (event) => {
-          if (event.type === 'started') {
-            setProgress({
-              completed: 0,
-              total: event.totalTasks,
-              label: '正在抓取 Reddit 并生成报告...',
-              sublabel: 'Netlify 免费版使用普通请求模式，进度不会逐条实时刷新。',
-            });
-          } else if (event.type === 'task_complete') {
-            setProgress({
-              completed: event.completed,
-              total: event.total,
-              label: `已抓取 ${event.completed} / ${event.total} 个来源`,
-              sublabel: event.label,
-            });
-          } else if (event.type === 'deep_diving') {
-            setProgress((p) => ({
-              ...p!,
-              label: `正在深挖 ${event.posts} 个评论楼层...`,
-              sublabel: undefined,
-            }));
-          } else if (event.type === 'summarizing') {
-            setProgress((p) => ({
-              ...p!,
-              label: '正在生成 AI 报告...',
-              sublabel: undefined,
-            }));
-          } else if (event.type === 'saving') {
-            setProgress((p) => ({ ...p!, label: '正在保存到历史记录...', sublabel: undefined }));
-          }
-        },
-        ac.signal,
-      )
-        .then((result) => {
-          setIsPending(false);
-          void queryClient.invalidateQueries({ queryKey: ['queries'] });
-          callbacks.onSuccess?.(result);
-        })
-        .catch((err: unknown) => {
-          if (err instanceof Error && err.name === 'AbortError') return;
-          setError(err instanceof Error ? err : new Error(String(err)));
-          setIsError(true);
-          setIsPending(false);
-        });
-    },
-    [queryClient],
-  );
 
   const reset = useCallback(() => {
     abortRef.current?.abort();
@@ -129,8 +103,110 @@ export function useAnalyzePlanStream() {
     setIsPending(false);
     setIsError(false);
     setError(null);
-    setProgress(null);
   }, []);
 
-  return { mutate, isPending, isError, error, progress, reset };
+  const mutate = useCallback(
+    (
+      input: TInput,
+      callbacks: {
+        onSuccess?: (result: TResult) => void;
+        onError?: (error: Error) => void;
+      } = {},
+    ) => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      setIsPending(true);
+      setIsError(false);
+      setError(null);
+
+      void submitAndPoll<TInput, TResult>(
+        kind,
+        input,
+        (task) => onTask?.(task),
+        controller.signal,
+      )
+        .then((result) => {
+          if (controller.signal.aborted) return;
+          setIsPending(false);
+          callbacks.onSuccess?.(result);
+        })
+        .catch((caught: unknown) => {
+          if (controller.signal.aborted) return;
+          const taskError = caught instanceof Error ? caught : new Error(String(caught));
+          setError(taskError);
+          setIsError(true);
+          setIsPending(false);
+          callbacks.onError?.(taskError);
+        });
+    },
+    [kind, onTask],
+  );
+
+  return { mutate, isPending, isError, error, reset };
+}
+
+export function useGeneratePlanMutation() {
+  return useAsyncTaskMutation<GeneratePlanInput, ScrapingPlan>('plan');
+}
+
+export function useAnalyzePlanStream() {
+  const queryClient = useQueryClient();
+  const [progress, setProgress] = useState<ProgressState | null>(null);
+
+  const handleTask = useCallback((task: AsyncTask<AnalyzeResult>) => {
+    const taskProgress = task.progress ?? {};
+    setProgress({
+      completed: taskProgress.completed ?? 0,
+      total: taskProgress.total ?? 100,
+      percent: taskProgress.percent ?? (task.status === 'queued' ? 2 : 5),
+      label:
+        taskProgress.message ??
+        (task.status === 'queued' ? '任务已提交，正在等待后台执行…' : '后台任务正在启动…'),
+      sublabel: taskProgress.detail,
+    });
+  }, []);
+
+  const {
+    mutate: runTask,
+    reset: resetTask,
+    ...taskState
+  } = useAsyncTaskMutation<AnalyzePlanInput, AnalyzeResult>(
+    'analyze',
+    handleTask,
+  );
+
+  const mutate = useCallback(
+    (
+      input: AnalyzePlanInput,
+      callbacks: { onSuccess?: (result: AnalyzeResult) => void } = {},
+    ) => {
+      setProgress({
+        completed: 0,
+        total: 100,
+        percent: 1,
+        label: '正在创建后台分析任务…',
+      });
+      runTask(input, {
+        onSuccess: (result) => {
+          setProgress({
+            completed: 100,
+            total: 100,
+            percent: 100,
+            label: '分析已完成',
+          });
+          void queryClient.invalidateQueries({ queryKey: ['queries'] });
+          callbacks.onSuccess?.(result);
+        },
+      });
+    },
+    [queryClient, runTask],
+  );
+
+  const reset = useCallback(() => {
+    resetTask();
+    setProgress(null);
+  }, [resetTask]);
+
+  return { ...taskState, mutate, progress, reset };
 }

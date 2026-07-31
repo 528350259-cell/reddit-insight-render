@@ -31,7 +31,7 @@ const AnalyzingState = ({
   progress: ProgressState | null;
   onCancel: () => void;
 }) => {
-  const showBar = progress !== null && progress.total > 0 && progress.completed < progress.total;
+  const percent = Math.min(100, Math.max(0, progress?.percent ?? 0));
 
   return (
     <div className="space-y-5 py-2">
@@ -40,35 +40,28 @@ const AnalyzingState = ({
           <div className="flex min-w-0 items-center gap-3">
             <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
             <p className="truncate text-sm text-muted-foreground">
-              {progress?.label ?? '正在抓取 Reddit 并生成报告...'}
+              {progress?.label ?? '后台分析任务正在启动…'}
             </p>
           </div>
           <Button variant="outline" size="sm" onClick={onCancel} className="shrink-0">
-            取消
+            停止等待
           </Button>
         </div>
-        <p
-          className={`truncate pl-7 text-xs text-muted-foreground ${progress?.sublabel ? '' : 'invisible'}`}
-        >
-          {progress?.sublabel ?? '正在准备数据'}
-        </p>
+        {progress?.sublabel && (
+          <p className="truncate pl-7 text-xs text-muted-foreground">{progress.sublabel}</p>
+        )}
       </div>
-      <div className="space-y-1" style={{ visibility: showBar ? 'visible' : 'hidden' }}>
+
+      <div className="space-y-1">
         <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
           <div
             className="h-full rounded-full bg-primary transition-all duration-500 ease-out"
-            style={{
-              width: `${progress && progress.total > 0 ? (progress.completed / progress.total) * 100 : 0}%`,
-            }}
+            style={{ width: `${percent}%` }}
           />
         </div>
-        <p className="text-right text-xs text-muted-foreground">
-          {progress && progress.total > 0
-            ? Math.round((progress.completed / progress.total) * 100)
-            : 0}
-          %
-        </p>
+        <p className="text-right text-xs text-muted-foreground">{percent}%</p>
       </div>
+
       <div className="space-y-3">
         {Array.from({ length: 3 }).map((_, index) => (
           <div
@@ -78,8 +71,10 @@ const AnalyzingState = ({
           />
         ))}
       </div>
-      <p className="text-xs text-muted-foreground">
-        通常需要 10 至 30 秒，具体取决于社区数量、帖子数量和评论深度。
+
+      <p className="text-xs leading-5 text-muted-foreground">
+        任务已在服务器后台运行。关闭页面不会中断抓取；完成后的报告也会保存到历史记录。
+        “停止等待”只停止当前页面轮询，不会终止服务器任务。
       </p>
     </div>
   );
@@ -97,7 +92,7 @@ const ErrorMessage = ({ message, error }: { message: string; error?: unknown }) 
   return (
     <div className="mt-4 space-y-1 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
       <p className="font-medium">{apiMessage ?? message}</p>
-      {apiMessage && <p className="opacity-80">{message}</p>}
+      {apiMessage && apiMessage !== message && <p className="opacity-80">{message}</p>}
       {isApiKeyLikely(apiMessage) && (
         <p>
           <Link to="/settings" className="font-medium underline underline-offset-2">
@@ -151,13 +146,15 @@ function TrackerPage() {
 
   const stepLabel = {
     input: '第 1 步，共 3 步：输入研究问题',
-    reviewing: analyzePlan.isPending ? '正在分析...' : '第 2 步，共 3 步：确认抓取计划',
+    reviewing: analyzePlan.isPending
+      ? '后台正在分析，可安全等待'
+      : '第 2 步，共 3 步：确认抓取计划',
     done: '第 3 步，共 3 步：查看分析报告',
   }[step.stage];
 
   const cardTitle = {
     input: '你想研究什么？',
-    reviewing: analyzePlan.isPending ? '正在分析...' : '抓取与分析计划',
+    reviewing: analyzePlan.isPending ? '后台分析进行中' : '抓取与分析计划',
     done: '分析报告',
   }[step.stage];
 
@@ -209,7 +206,7 @@ function TrackerPage() {
                     isLoading={false}
                   />
                   {analyzePlan.isError && (
-                    <ErrorMessage message="分析失败。" error={analyzePlan.error} />
+                    <ErrorMessage message="分析任务执行失败。" error={analyzePlan.error} />
                   )}
                 </>
               ))}
