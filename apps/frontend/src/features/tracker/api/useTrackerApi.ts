@@ -67,12 +67,27 @@ async function submitAndPoll<TInput, TResult>(
   );
   onTask(created);
 
+  let transientFailures = 0;
   while (!signal.aborted) {
     await wait(2000, signal);
-    const { data: task } = await api.get<AsyncTask<TResult>>(
-      `/tracker/tasks/${created.id}`,
-      { signal },
-    );
+    let task: AsyncTask<TResult>;
+    try {
+      const response = await api.get<AsyncTask<TResult>>(`/tracker/tasks/${created.id}`, {
+        signal,
+      });
+      task = response.data;
+      transientFailures = 0;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      const status = (error as { response?: { status?: number } }).response?.status;
+      const isColdStartError = status === 404 || status === 502 || status === 503 || status === 504;
+      if (isColdStartError && transientFailures < 20) {
+        transientFailures += 1;
+        continue;
+      }
+      throw error;
+    }
+
     onTask(task);
 
     if (task.status === 'completed') {

@@ -35,7 +35,10 @@ api.interceptors.response.use(
       toast.error(message || '请求过于频繁，请稍后再试。');
     }
 
-    if (status >= 500) {
+    const isTaskPollingRequest =
+      error.config?.method === 'get' && String(error.config?.url ?? '').includes('/tracker/tasks/');
+
+    if (status >= 500 && !isTaskPollingRequest) {
       toast.error(message || '服务端出现异常，请稍后再试。');
     }
 

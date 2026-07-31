@@ -163,7 +163,14 @@ function getRequestOrigin(event: NetlifyEvent): string {
   return deployUrl.replace(/\/$/, '');
 }
 
-async function dispatchBackgroundTask(event: NetlifyEvent, taskId: string): Promise<void> {
+async function dispatchBackgroundTask(
+  event: NetlifyEvent,
+  task: {
+    taskId: string;
+    kind: AnalysisTaskKind;
+    payload: unknown;
+  },
+): Promise<void> {
   const response = await fetch(`${getRequestOrigin(event)}/.netlify/functions/analysis-background`, {
     method: 'POST',
     headers: {
@@ -172,7 +179,7 @@ async function dispatchBackgroundTask(event: NetlifyEvent, taskId: string): Prom
         ? { 'x-app-password': process.env.APP_ACCESS_PASSWORD }
         : {}),
     },
-    body: JSON.stringify({ taskId }),
+    body: JSON.stringify(task),
   });
 
   if (!response.ok) {
@@ -182,6 +189,16 @@ async function dispatchBackgroundTask(event: NetlifyEvent, taskId: string): Prom
 
 export async function runAnalysisTask(taskId: string) {
   const { analysisTaskService } = await getServices();
+  return analysisTaskService.run(taskId);
+}
+
+export async function createAndRunAnalysisTask(
+  taskId: string,
+  kind: AnalysisTaskKind,
+  payload: unknown,
+) {
+  const { analysisTaskService } = await getServices();
+  await analysisTaskService.createWithId(taskId, kind, payload as never);
   return analysisTaskService.run(taskId);
 }
 
@@ -199,22 +216,23 @@ export async function handler(event: NetlifyEvent): Promise<NetlifyResponse> {
   }
 
   try {
-    const { trackerService, queriesService, settingsService, analysisTaskService } =
-      await getServices();
-
     const createTaskMatch = path.match(/^\/tracker\/tasks\/(plan|analyze)$/);
     if (event.httpMethod === 'POST' && createTaskMatch) {
       const kind = createTaskMatch[1] as AnalysisTaskKind;
-      const task = await analysisTaskService.create(kind, parseBody(event) as never);
-      try {
-        await dispatchBackgroundTask(event, task.id);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await analysisTaskService.fail(task.id, message);
-        throw error;
-      }
-      return json(202, task);
+      const payload = parseBody(event);
+      const taskId = new mongoose.Types.ObjectId().toString();
+      await dispatchBackgroundTask(event, { taskId, kind, payload });
+      return json(202, {
+        id: taskId,
+        kind,
+        status: 'queued',
+        stage: 'queued',
+        progress: {},
+      });
     }
+
+    const { trackerService, queriesService, settingsService, analysisTaskService } =
+      await getServices();
 
     const taskMatch = path.match(/^\/tracker\/tasks\/([^/]+)$/);
     if (event.httpMethod === 'GET' && taskMatch) {

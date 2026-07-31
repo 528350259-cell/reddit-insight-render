@@ -8,12 +8,18 @@ exports.handler = async (event) => {
   }
 
   const body = event.body ? JSON.parse(event.body) : {};
-  if (!body.taskId || typeof body.taskId !== 'string') {
-    console.error('[analysis-background] taskId is required');
+  if (
+    !body.taskId ||
+    typeof body.taskId !== 'string' ||
+    !['plan', 'analyze'].includes(body.kind) ||
+    !body.payload ||
+    typeof body.payload !== 'object'
+  ) {
+    console.error('[analysis-background] taskId, kind, and payload are required');
     return;
   }
 
-  const { runAnalysisTask } = require('../../apps/backend/dist/netlify-handler');
-  const task = await runAnalysisTask(body.taskId);
+  const { createAndRunAnalysisTask } = require('../../apps/backend/dist/netlify-handler');
+  const task = await createAndRunAnalysisTask(body.taskId, body.kind, body.payload);
   console.log(`[analysis-background] task ${body.taskId} finished with status ${task.status}`);
 };

@@ -46,6 +46,29 @@ export class AnalysisTaskService {
     return this.toView(task);
   }
 
+  async createWithId(
+    id: string,
+    kind: AnalysisTaskKind,
+    payload: GeneratePlanDto | AnalyzePlanDto,
+  ): Promise<AnalysisTaskView> {
+    const task = await this.taskModel
+      .findOneAndUpdate(
+        { _id: id },
+        {
+          $setOnInsert: {
+            kind,
+            status: 'queued',
+            payload,
+            stage: 'queued',
+            progress: {},
+          },
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      )
+      .exec();
+    return this.toView(task);
+  }
+
   async findOne(id: string): Promise<AnalysisTaskView> {
     let task = await this.taskModel.findById(id).exec();
     if (!task) throw new NotFoundException(`Task ${id} not found`);
