@@ -31,6 +31,19 @@ export class RedditSourceService {
     return this.getActiveSource().then((source) => source.scrapePost(...args));
   }
 
+  // Google-assisted discovery only works via Decodo (it needs Decodo's own
+  // anti-bot proxy to hit Google) — reddit-direct has no such capability, so
+  // this quietly no-ops for that provider instead of erroring.
+  async discoverViaGoogle(
+    query: string,
+    limit?: number,
+    signal?: AbortSignal,
+  ): Promise<ReturnType<DecodoService['searchGoogleForReddit']>> {
+    const provider = await this.getProvider();
+    if (provider !== 'decodo') return [];
+    return this.decodoService.searchGoogleForReddit(query, limit, signal);
+  }
+
   private async getActiveSource(): Promise<RedditSource> {
     const provider = await this.getProvider();
     this.logger.log(`Using scraping provider: ${provider}`);

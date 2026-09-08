@@ -238,7 +238,11 @@ export class TrackerService {
       `[Analyze] Step 1/4 — Scraping (${dto.queries.length} searches + ${dto.subreddits.length} subreddit feeds, max ${SCRAPE_CONCURRENCY} concurrent)...`,
     );
     const t1 = Date.now();
-    const { posts, searchPostIds, failures } = await this.scrapeAll(dto, onProgress, signal);
+    const { posts, searchPostIds, failures, googleHydrated } = await this.scrapeAll(
+      dto,
+      onProgress,
+      signal,
+    );
     this.logger.log(
       `[Analyze] Step 1/4 ✓ — ${posts.length} posts collected in ${Date.now() - t1}ms`,
     );
@@ -278,7 +282,7 @@ export class TrackerService {
     );
     onProgress?.({ type: 'deep_diving', posts: deepDivePosts.length });
     const t2 = Date.now();
-    const postsWithComments = await this.deepDive(deepDivePosts, signal);
+    const postsWithComments = await this.deepDive(deepDivePosts, googleHydrated, signal);
     const totalComments = postsWithComments.reduce((n, p) => n + p.comments.length, 0);
     this.logger.log(
       `[Analyze] Step 2/4 ✓ — ${totalComments} comments fetched in ${Date.now() - t2}ms`,
@@ -331,12 +335,19 @@ export class TrackerService {
     posts: RedditPost[];
     searchPostIds: Set<string>;
     failures: Error[];
+    googleHydrated: Map<string, RedditPostWithComments>;
   }> {
     // Always search the verbatim prompt — LLM-generated queries may paraphrase it
     const seedQueries = shouldSearchVerbatimPrompt(dto.prompt) ? [dto.prompt] : [];
     const allQueries = [...new Set([...seedQueries, ...dto.queries])];
 
-    const totalTasks = allQueries.length + dto.subreddits.length;
+    // Reddit's own search ranks broad/generic prompts poorly. Supplement with
+    // one Google-assisted discovery pass on the primary query only (not every
+    // LLM sub-query) to keep the extra Decodo cost small.
+    const googleQuery = seedQueries[0] ?? dto.queries[0];
+    const googleHydrated = new Map<string, RedditPostWithComments>();
+
+    const totalTasks = allQueries.length + dto.subreddits.length + (googleQuery ? 1 : 0);
     let completedTasks = 0;
     const failures: Error[] = [];
 
@@ -390,27 +401,79 @@ export class TrackerService {
       },
     );
 
-    const allTasks = [...searchTasks, ...subredditTasks];
+    // Google discovery returns full RedditPostWithComments (scrapePost already
+    // fetches comments) — stash them so deepDive can reuse instead of re-fetching.
+    const googleTasks: (() => Promise<RedditPost[]>)[] = googleQuery
+      ? [
+          async () => {
+            const found = await this.redditSourceService
+              .discoverViaGoogle(googleQuery, 8, signal)
+              .catch((err: unknown) => {
+                if ((err as Error)?.name === 'AbortError') throw err;
+                this.logger.warn(`Google discovery failed for "${googleQuery}": ${String(err)}`);
+                failures.push(err as Error);
+                return [];
+              });
+
+            const hydrated = await Promise.all(
+              found.map(({ subreddit, postId }) =>
+                this.redditSourceService
+                  .scrapePost({ subreddit, postId }, signal)
+                  .catch((err: unknown) => {
+                    if ((err as Error)?.name === 'AbortError') throw err;
+                    this.logger.warn(`Google-discovered post ${postId} failed: ${String(err)}`);
+                    return null;
+                  }),
+              ),
+            );
+
+            const posts: RedditPost[] = [];
+            for (const post of hydrated) {
+              if (!post?.id) continue;
+              googleHydrated.set(post.id, post);
+              posts.push(post);
+            }
+
+            onProgress?.({
+              type: 'task_complete',
+              completed: ++completedTasks,
+              total: totalTasks,
+              label: `google: "${googleQuery}"`,
+            });
+            return posts;
+          },
+        ]
+      : [];
+
+    const allTasks = [...searchTasks, ...subredditTasks, ...googleTasks];
     const results = await TrackerService.runWithConcurrency(allTasks, SCRAPE_CONCURRENCY);
 
     const searchResults = results.slice(0, allQueries.length).flat();
-    const subredditResults = results.slice(allQueries.length).flat();
+    const subredditResults = results
+      .slice(allQueries.length, allQueries.length + dto.subreddits.length)
+      .flat();
+    const googleResults = results.slice(allQueries.length + dto.subreddits.length).flat();
 
-    // IDs of search-result posts — used to prioritize deep-dive selection
-    const searchPostIds = new Set(searchResults.map((p) => p.id).filter(Boolean));
+    // IDs of search-result posts — used to prioritize deep-dive selection.
+    // Google-discovered posts count as "search" too: they're topically found,
+    // not just high-upvote noise from a subreddit's hot feed.
+    const searchPostIds = new Set(
+      [...searchResults, ...googleResults].map((p) => p.id).filter(Boolean),
+    );
 
-    const all = [...searchResults, ...subredditResults];
+    const all = [...searchResults, ...subredditResults, ...googleResults];
     const ranked = this.deduplicateAndRank(all, dto.prompt, dto.subreddits).slice(
       0,
       Math.min(dto.maxPosts ?? MAX_POSTS_TOTAL, MAX_POSTS_TOTAL),
     );
 
     this.logger.log(
-      `[Scrape] Search: ${searchResults.length} | Subreddits: ${subredditResults.length}` +
-        ` → dedup+rank: ${ranked.length} (top: "${ranked[0]?.title?.slice(0, 60) ?? 'none'}")`,
+      `[Scrape] Search: ${searchResults.length} | Subreddits: ${subredditResults.length} | ` +
+        `Google: ${googleResults.length} → dedup+rank: ${ranked.length} ` +
+        `(top: "${ranked[0]?.title?.slice(0, 60) ?? 'none'}")`,
     );
 
-    return { posts: ranked, searchPostIds, failures };
+    return { posts: ranked, searchPostIds, failures, googleHydrated };
   }
 
   // Runs tasks with at most `concurrency` in-flight at a time to avoid 429s
@@ -435,17 +498,22 @@ export class TrackerService {
 
   private async deepDive(
     posts: RedditPost[],
+    hydrated: Map<string, RedditPostWithComments>,
     signal?: AbortSignal,
   ): Promise<RedditPostWithComments[]> {
-    const tasks = posts.map((post) =>
-      this.redditSourceService
+    const tasks = posts.map((post) => {
+      // Google discovery already fetched this post's comments in Step 1 — reuse it.
+      const cached = hydrated.get(post.id);
+      if (cached) return Promise.resolve(cached);
+
+      return this.redditSourceService
         .scrapePost({ subreddit: post.subreddit, postId: post.id }, signal)
         .catch((err: unknown) => {
           if ((err as Error)?.name === 'AbortError') throw err;
           this.logger.warn(`Comment scrape failed for post ${post.id}: ${String(err)}`);
           return { ...post, comments: [] };
-        }),
-    );
+        });
+    });
 
     return Promise.all(tasks);
   }
