@@ -232,14 +232,19 @@ export class DecodoService {
     return discovered;
   }
 
-  // google_search's `parse: true` response nests organic results under
-  // content.results.organic — verified against a live Decodo response.
+  // google_search's `parse: true` response double-nests organic results:
+  // content.results.results.organic (the outer "results" wraps pagination
+  // metadata like last_visible_page/page; the inner "results" is the actual
+  // SERP payload with organic/navigation/paid/etc). Re-verified against a
+  // live Decodo response on 2026-09-08 — a single-level content.results.organic
+  // silently returns nothing, which is exactly the kind of bug unit tests
+  // built on a guessed mock shape won't catch.
   private extractOrganicResults(content: unknown): GoogleOrganicResult[] {
     try {
       const parsed = this.parseContent<{
-        results?: { organic?: GoogleOrganicResult[] };
+        results?: { results?: { organic?: GoogleOrganicResult[] } };
       }>(content as string | object);
-      return parsed?.results?.organic ?? [];
+      return parsed?.results?.results?.organic ?? [];
     } catch (err) {
       this.logger.warn(`Failed to parse google_search response: ${String(err)}`);
       return [];

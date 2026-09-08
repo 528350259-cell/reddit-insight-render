@@ -561,10 +561,17 @@ describe('DecodoService', () => {
   // ---------------------------------------------------------------------------
 
   describe('searchGoogleForReddit()', () => {
+    // Mirrors the real (double-nested) Decodo google_search shape: the outer
+    // "results" carries pagination metadata, the inner "results" is the SERP
+    // payload. A single-level mock here would validate the wrong contract.
     function makeOrganic(urls: string[]) {
       return {
         results: {
-          organic: urls.map((url, i) => ({ pos: i + 1, title: `Result ${i + 1}`, url })),
+          last_visible_page: 1,
+          page: 1,
+          results: {
+            organic: urls.map((url, i) => ({ pos: i + 1, title: `Result ${i + 1}`, url })),
+          },
         },
       };
     }
