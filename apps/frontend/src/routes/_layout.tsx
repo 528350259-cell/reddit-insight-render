@@ -22,7 +22,7 @@ import {
 } from '@/components/ui/breadcrumb';
 import { Toaster } from '@/components/ui/toaster';
 import { ThemeToggle } from '@/components/ThemeToggle';
-import { History, Search, Settings } from 'lucide-react';
+import { History, LineChart, Search, Settings } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 export const Route = createFileRoute('/_layout')({
@@ -55,6 +55,11 @@ const navigationSections: NavSection[] = [
         title: '历史记录',
         url: '/history',
         icon: History,
+      },
+      {
+        title: '市场信号',
+        url: '/market-signals',
+        icon: LineChart,
       },
     ],
   },

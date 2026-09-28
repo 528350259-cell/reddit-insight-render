@@ -13,6 +13,7 @@ import { Route as LayoutRouteImport } from './routes/_layout'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as LayoutTrackerRouteImport } from './routes/_layout/tracker'
 import { Route as LayoutSettingsRouteImport } from './routes/_layout/settings'
+import { Route as LayoutMarketSignalsRouteImport } from './routes/_layout/market-signals'
 import { Route as LayoutHistoryRouteImport } from './routes/_layout/history'
 import { Route as LayoutDashboardRouteImport } from './routes/_layout/dashboard'
 import { Route as LayoutHistoryIdRouteImport } from './routes/_layout/history.$id'
@@ -36,6 +37,11 @@ const LayoutSettingsRoute = LayoutSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => LayoutRoute,
 } as any)
+const LayoutMarketSignalsRoute = LayoutMarketSignalsRouteImport.update({
+  id: '/market-signals',
+  path: '/market-signals',
+  getParentRoute: () => LayoutRoute,
+} as any)
 const LayoutHistoryRoute = LayoutHistoryRouteImport.update({
   id: '/history',
   path: '/history',
@@ -56,6 +62,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/dashboard': typeof LayoutDashboardRoute
   '/history': typeof LayoutHistoryRouteWithChildren
+  '/market-signals': typeof LayoutMarketSignalsRoute
   '/settings': typeof LayoutSettingsRoute
   '/tracker': typeof LayoutTrackerRoute
   '/history/$id': typeof LayoutHistoryIdRoute
@@ -64,6 +71,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/dashboard': typeof LayoutDashboardRoute
   '/history': typeof LayoutHistoryRouteWithChildren
+  '/market-signals': typeof LayoutMarketSignalsRoute
   '/settings': typeof LayoutSettingsRoute
   '/tracker': typeof LayoutTrackerRoute
   '/history/$id': typeof LayoutHistoryIdRoute
@@ -74,6 +82,7 @@ export interface FileRoutesById {
   '/_layout': typeof LayoutRouteWithChildren
   '/_layout/dashboard': typeof LayoutDashboardRoute
   '/_layout/history': typeof LayoutHistoryRouteWithChildren
+  '/_layout/market-signals': typeof LayoutMarketSignalsRoute
   '/_layout/settings': typeof LayoutSettingsRoute
   '/_layout/tracker': typeof LayoutTrackerRoute
   '/_layout/history/$id': typeof LayoutHistoryIdRoute
@@ -84,6 +93,7 @@ export interface FileRouteTypes {
     | '/'
     | '/dashboard'
     | '/history'
+    | '/market-signals'
     | '/settings'
     | '/tracker'
     | '/history/$id'
@@ -92,6 +102,7 @@ export interface FileRouteTypes {
     | '/'
     | '/dashboard'
     | '/history'
+    | '/market-signals'
     | '/settings'
     | '/tracker'
     | '/history/$id'
@@ -101,6 +112,7 @@ export interface FileRouteTypes {
     | '/_layout'
     | '/_layout/dashboard'
     | '/_layout/history'
+    | '/_layout/market-signals'
     | '/_layout/settings'
     | '/_layout/tracker'
     | '/_layout/history/$id'
@@ -139,6 +151,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof LayoutSettingsRouteImport
+      parentRoute: typeof LayoutRoute
+    }
+    '/_layout/market-signals': {
+      id: '/_layout/market-signals'
+      path: '/market-signals'
+      fullPath: '/market-signals'
+      preLoaderRoute: typeof LayoutMarketSignalsRouteImport
       parentRoute: typeof LayoutRoute
     }
     '/_layout/history': {
@@ -180,6 +199,7 @@ const LayoutHistoryRouteWithChildren = LayoutHistoryRoute._addFileChildren(
 interface LayoutRouteChildren {
   LayoutDashboardRoute: typeof LayoutDashboardRoute
   LayoutHistoryRoute: typeof LayoutHistoryRouteWithChildren
+  LayoutMarketSignalsRoute: typeof LayoutMarketSignalsRoute
   LayoutSettingsRoute: typeof LayoutSettingsRoute
   LayoutTrackerRoute: typeof LayoutTrackerRoute
 }
@@ -187,6 +207,7 @@ interface LayoutRouteChildren {
 const LayoutRouteChildren: LayoutRouteChildren = {
   LayoutDashboardRoute: LayoutDashboardRoute,
   LayoutHistoryRoute: LayoutHistoryRouteWithChildren,
+  LayoutMarketSignalsRoute: LayoutMarketSignalsRoute,
   LayoutSettingsRoute: LayoutSettingsRoute,
   LayoutTrackerRoute: LayoutTrackerRoute,
 }

@@ -49,6 +49,25 @@ export class ConfigService {
     };
   }
 
+  get tikhub() {
+    return {
+      apiKey: this.configService.get<string>('TIKHUB_API_KEY', ''),
+      // Protects POST /admin/tikhub/sync — separate from Dream Insight's own
+      // admin token so the two systems' credentials stay independent.
+      syncToken: this.configService.get<string>('TIKHUB_SYNC_TOKEN', ''),
+    };
+  }
+
+  get dreamInsight() {
+    return {
+      baseUrl: this.configService.get<string>(
+        'DREAM_INSIGHT_API_BASE_URL',
+        'https://dream-creative-api-1.onrender.com',
+      ),
+      adminToken: this.configService.get<string>('DREAM_INSIGHT_ADMIN_TOKEN', ''),
+    };
+  }
+
   get llm() {
     return {
       provider: this.configService.get<string>('LLM_PROVIDER', 'claude'),

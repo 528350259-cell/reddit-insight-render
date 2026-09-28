@@ -60,11 +60,9 @@ async function submitAndPoll<TInput, TResult>(
   onTask: (task: AsyncTask<TResult>) => void,
   signal: AbortSignal,
 ): Promise<TResult> {
-  const { data: created } = await api.post<AsyncTask<TResult>>(
-    `/tracker/tasks/${kind}`,
-    input,
-    { signal },
-  );
+  const { data: created } = await api.post<AsyncTask<TResult>>(`/tracker/tasks/${kind}`, input, {
+    signal,
+  });
   onTask(created);
 
   let transientFailures = 0;
@@ -135,12 +133,7 @@ function useAsyncTaskMutation<TInput, TResult>(
       setIsError(false);
       setError(null);
 
-      void submitAndPoll<TInput, TResult>(
-        kind,
-        input,
-        (task) => onTask?.(task),
-        controller.signal,
-      )
+      void submitAndPoll<TInput, TResult>(kind, input, (task) => onTask?.(task), controller.signal)
         .then((result) => {
           if (controller.signal.aborted) return;
           setIsPending(false);
@@ -186,16 +179,10 @@ export function useAnalyzePlanStream() {
     mutate: runTask,
     reset: resetTask,
     ...taskState
-  } = useAsyncTaskMutation<AnalyzePlanInput, AnalyzeResult>(
-    'analyze',
-    handleTask,
-  );
+  } = useAsyncTaskMutation<AnalyzePlanInput, AnalyzeResult>('analyze', handleTask);
 
   const mutate = useCallback(
-    (
-      input: AnalyzePlanInput,
-      callbacks: { onSuccess?: (result: AnalyzeResult) => void } = {},
-    ) => {
+    (input: AnalyzePlanInput, callbacks: { onSuccess?: (result: AnalyzeResult) => void } = {}) => {
       setProgress({
         completed: 0,
         total: 100,
