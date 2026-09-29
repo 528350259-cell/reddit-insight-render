@@ -17,12 +17,25 @@ import {
   type AnalysisTaskKind,
 } from './features/tracker/analysis-task.schema';
 import { AnalysisTaskService } from './features/tracker/analysis-task.service';
+import { TikhubService } from './features/tikhub/tikhub.service';
+import { TikhubSyncService } from './features/tikhub/tikhub-sync.service';
+import {
+  TrackedKeywordEntity,
+  TrackedKeywordSchema,
+} from './features/tikhub/tracked-keyword.schema';
+import {
+  TikhubSnapshotEntity,
+  TikhubSnapshotSchema,
+} from './features/tikhub/tikhub-snapshot.schema';
+import { DreamInsightService } from './features/dream-insight/dream-insight.service';
+import { MarketSignalsService } from './features/market-signals/market-signals.service';
 
 interface NetlifyEvent {
   httpMethod: string;
   path: string;
   headers: Record<string, string | undefined>;
   body?: string | null;
+  queryStringParameters?: Record<string, string | undefined> | null;
 }
 
 interface NetlifyResponse {
@@ -43,6 +56,8 @@ let servicesPromise: Promise<{
   queriesService: QueriesService;
   settingsService: SettingsService;
   analysisTaskService: AnalysisTaskService;
+  tikhubSyncService: TikhubSyncService;
+  marketSignalsService: MarketSignalsService;
 }> | null = null;
 
 function json(statusCode: number, body: unknown): NetlifyResponse {
@@ -83,6 +98,15 @@ function isAuthorized(event: NetlifyEvent): boolean {
   return headerPassword === expected || authPassword === expected;
 }
 
+// The weekly GitHub Actions sync job has its own independent credential
+// (TIKHUB_SYNC_TOKEN, checked below) and isn't a human visiting the app, so
+// it's exempt from the site-wide access password the same way /healthz is.
+function isSyncTokenValid(event: NetlifyEvent): boolean {
+  const expected = process.env.TIKHUB_SYNC_TOKEN?.trim();
+  if (!expected) return false;
+  return (event.headers['x-sync-token'] ?? '').trim() === expected;
+}
+
 function getEnvConfigService(): ConfigService {
   return new ConfigService({
     get: (key: string, defaultValue?: unknown) => {
@@ -109,8 +133,13 @@ async function getServices() {
       mongoose.models[Settings.name] ?? mongoose.model(Settings.name, SettingsSchema);
     const QueryModel = mongoose.models[Query.name] ?? mongoose.model(Query.name, QuerySchema);
     const AnalysisTaskModel =
-      mongoose.models[AnalysisTask.name] ??
-      mongoose.model(AnalysisTask.name, AnalysisTaskSchema);
+      mongoose.models[AnalysisTask.name] ?? mongoose.model(AnalysisTask.name, AnalysisTaskSchema);
+    const TrackedKeywordModel =
+      mongoose.models[TrackedKeywordEntity.name] ??
+      mongoose.model(TrackedKeywordEntity.name, TrackedKeywordSchema);
+    const TikhubSnapshotModel =
+      mongoose.models[TikhubSnapshotEntity.name] ??
+      mongoose.model(TikhubSnapshotEntity.name, TikhubSnapshotSchema);
 
     const configService = getEnvConfigService();
     const settingsService = new SettingsService(SettingsModel as never, configService);
@@ -124,12 +153,24 @@ async function getServices() {
     );
     const queriesService = new QueriesService(QueryModel as never);
     const trackerService = new TrackerService(llmService, redditSourceService, queriesService);
-    const analysisTaskService = new AnalysisTaskService(
-      AnalysisTaskModel as never,
-      trackerService,
+    const analysisTaskService = new AnalysisTaskService(AnalysisTaskModel as never, trackerService);
+    const tikhubService = new TikhubService(configService);
+    const tikhubSyncService = new TikhubSyncService(
+      tikhubService,
+      TrackedKeywordModel as never,
+      TikhubSnapshotModel as never,
     );
+    const dreamInsightService = new DreamInsightService(configService);
+    const marketSignalsService = new MarketSignalsService(tikhubSyncService, dreamInsightService);
 
-    return { trackerService, queriesService, settingsService, analysisTaskService };
+    return {
+      trackerService,
+      queriesService,
+      settingsService,
+      analysisTaskService,
+      tikhubSyncService,
+      marketSignalsService,
+    };
   })();
 
   return servicesPromise;
@@ -141,7 +182,7 @@ function errorResponse(error: unknown): NetlifyResponse {
     const message =
       typeof response === 'string'
         ? response
-        : (response as { message?: string | string[] }).message ?? error.message;
+        : ((response as { message?: string | string[] }).message ?? error.message);
     return json(error.getStatus(), { message });
   }
 
@@ -171,16 +212,19 @@ async function dispatchBackgroundTask(
     payload: unknown;
   },
 ): Promise<void> {
-  const response = await fetch(`${getRequestOrigin(event)}/.netlify/functions/analysis-background`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(process.env.APP_ACCESS_PASSWORD
-        ? { 'x-app-password': process.env.APP_ACCESS_PASSWORD }
-        : {}),
+  const response = await fetch(
+    `${getRequestOrigin(event)}/.netlify/functions/analysis-background`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(process.env.APP_ACCESS_PASSWORD
+          ? { 'x-app-password': process.env.APP_ACCESS_PASSWORD }
+          : {}),
+      },
+      body: JSON.stringify(task),
     },
-    body: JSON.stringify(task),
-  });
+  );
 
   if (!response.ok) {
     throw new Error(`Background task dispatch failed with status ${response.status}`);
@@ -211,6 +255,20 @@ export async function handler(event: NetlifyEvent): Promise<NetlifyResponse> {
     return json(200, { ok: true, service: 'reddit-insight-netlify-api' });
   }
 
+  // Own credential (X-Sync-Token), not the site-wide access password — the
+  // weekly GitHub Actions job calling this doesn't know APP_ACCESS_PASSWORD.
+  if (path === '/admin/tikhub/sync' && event.httpMethod === 'POST') {
+    if (!isSyncTokenValid(event)) {
+      return json(401, { message: 'Invalid or missing X-Sync-Token' });
+    }
+    try {
+      const { tikhubSyncService } = await getServices();
+      return json(200, await tikhubSyncService.syncAllTrackedKeywords());
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
+
   if (!isAuthorized(event)) {
     return json(401, { message: '请输入正确的访问口令。' });
   }
@@ -231,8 +289,14 @@ export async function handler(event: NetlifyEvent): Promise<NetlifyResponse> {
       });
     }
 
-    const { trackerService, queriesService, settingsService, analysisTaskService } =
-      await getServices();
+    const {
+      trackerService,
+      queriesService,
+      settingsService,
+      analysisTaskService,
+      tikhubSyncService,
+      marketSignalsService,
+    } = await getServices();
 
     const taskMatch = path.match(/^\/tracker\/tasks\/([^/]+)$/);
     if (event.httpMethod === 'GET' && taskMatch) {
@@ -267,6 +331,29 @@ export async function handler(event: NetlifyEvent): Promise<NetlifyResponse> {
 
     if (event.httpMethod === 'PATCH' && path === '/settings') {
       return json(200, await settingsService.update(parseBody(event) as never));
+    }
+
+    if (event.httpMethod === 'GET' && path === '/tikhub/keywords') {
+      return json(200, await tikhubSyncService.listKeywords());
+    }
+
+    if (event.httpMethod === 'POST' && path === '/tikhub/keywords') {
+      const body = parseBody(event) as { keyword: string; region?: never };
+      return json(200, await tikhubSyncService.addKeyword(body.keyword, body.region));
+    }
+
+    const keywordDeleteMatch = path.match(/^\/tikhub\/keywords\/([^/]+)$/);
+    if (keywordDeleteMatch && event.httpMethod === 'DELETE') {
+      await tikhubSyncService.removeKeyword(keywordDeleteMatch[1]);
+      return empty(204);
+    }
+
+    if (event.httpMethod === 'GET' && path === '/market-signals') {
+      const keyword = event.queryStringParameters?.keyword?.trim();
+      if (!keyword) {
+        return json(400, { message: 'Query param "keyword" is required' });
+      }
+      return json(200, await marketSignalsService.getSignals(keyword));
     }
 
     return json(404, { message: `Route not found: ${event.httpMethod} ${path}` });

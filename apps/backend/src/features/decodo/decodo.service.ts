@@ -16,7 +16,13 @@ import type {
   ScrapeSearchParams,
   ScrapeSubredditParams,
   ScrapePostParams,
+  GoogleOrganicResult,
+  GoogleDiscoveredPost,
 } from './decodo.types';
+
+// Matches Reddit post permalinks embedded in a Google result URL, e.g.
+// https://www.reddit.com/r/headphones/comments/1kp55ia/some_title/
+const REDDIT_PERMALINK_RE = /reddit\.com\/r\/([^/]+)\/comments\/([a-z0-9]+)\//i;
 
 // Strips "/r/", "r/", and surrounding whitespace from a subreddit name.
 // LLM plan output occasionally includes the "r/" prefix; without this,
@@ -43,7 +49,15 @@ export class DecodoService {
       throw new BadRequestException('DECODO_BASIC_AUTH_TOKEN is not configured');
     }
 
-    this.logger.log(`Scraping [${request.target}] ${request.url}`);
+    this.logger.log(`Scraping [${request.target}] ${request.url ?? request.query}`);
+
+    // The google_search target takes `query` (+ optional `parse`) instead of
+    // `url`/`locale` — sending both shapes together gets rejected with a 400,
+    // so build the body based on which one this request actually uses.
+    const body =
+      request.query !== undefined
+        ? { target: request.target, query: request.query, parse: request.parse }
+        : { target: request.target, url: request.url, locale: request.locale ?? 'en' };
 
     const response = await fetch('https://scraper-api.decodo.com/v2/scrape', {
       method: 'POST',
@@ -52,11 +66,7 @@ export class DecodoService {
         Authorization: `Basic ${decodoApiKey}`,
         'x-integration': 'reddit_tracker',
       },
-      body: JSON.stringify({
-        target: request.target,
-        url: request.url,
-        locale: request.locale ?? 'en',
-      }),
+      body: JSON.stringify(body),
       signal,
     });
 
@@ -95,7 +105,7 @@ export class DecodoService {
 
     return {
       status: first.status_code,
-      url: request.url,
+      url: request.url ?? request.query ?? '',
       content: first.content as unknown,
       target: request.target,
     };
@@ -174,6 +184,71 @@ export class DecodoService {
     }
 
     return this.parsePostWithComments(result.content as string | object);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Target: google_search — discover Reddit threads Reddit's own search misses
+  // ---------------------------------------------------------------------------
+  //
+  // Reddit's native search.json ranks poorly on broad/generic prompts. Google
+  // ranks Reddit content well by default (no advanced operator needed) — in
+  // fact appending a `site:reddit.com` filter to the query breaks this target
+  // (Google silently drops it and returns unrelated results), so we mimic
+  // what a human actually types: "<query> reddit".
+
+  async searchGoogleForReddit(
+    query: string,
+    limit = 8,
+    signal?: AbortSignal,
+  ): Promise<GoogleDiscoveredPost[]> {
+    const result = await this.scrape(
+      { target: 'google_search', query: `${query} reddit`, parse: true },
+      signal,
+    );
+
+    const organic = this.extractOrganicResults(result.content);
+    if (organic.length === 0) {
+      this.logger.warn(`[GoogleDiscovery] No organic results for "${query}"`);
+      return [];
+    }
+
+    const seen = new Set<string>();
+    const discovered: GoogleDiscoveredPost[] = [];
+
+    for (const item of organic) {
+      const match = REDDIT_PERMALINK_RE.exec(item.url ?? '');
+      if (!match) continue;
+      const [, subreddit, postId] = match;
+      if (seen.has(postId)) continue;
+      seen.add(postId);
+      discovered.push({ subreddit, postId });
+      if (discovered.length >= limit) break;
+    }
+
+    this.logger.log(
+      `[GoogleDiscovery] "${query}" → ${organic.length} organic results, ${discovered.length} Reddit threads`,
+    );
+
+    return discovered;
+  }
+
+  // google_search's `parse: true` response double-nests organic results:
+  // content.results.results.organic (the outer "results" wraps pagination
+  // metadata like last_visible_page/page; the inner "results" is the actual
+  // SERP payload with organic/navigation/paid/etc). Re-verified against a
+  // live Decodo response on 2026-09-08 — a single-level content.results.organic
+  // silently returns nothing, which is exactly the kind of bug unit tests
+  // built on a guessed mock shape won't catch.
+  private extractOrganicResults(content: unknown): GoogleOrganicResult[] {
+    try {
+      const parsed = this.parseContent<{
+        results?: { results?: { organic?: GoogleOrganicResult[] } };
+      }>(content as string | object);
+      return parsed?.results?.results?.organic ?? [];
+    } catch (err) {
+      this.logger.warn(`Failed to parse google_search response: ${String(err)}`);
+      return [];
+    }
   }
 
   // ---------------------------------------------------------------------------

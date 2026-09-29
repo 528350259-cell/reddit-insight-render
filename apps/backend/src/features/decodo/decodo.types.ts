@@ -1,8 +1,13 @@
-export type DecodoTarget = 'universal' | 'reddit_subreddit' | 'reddit_post';
+export type DecodoTarget = 'universal' | 'reddit_subreddit' | 'reddit_post' | 'google_search';
 
 export interface DecodoScrapeRequest {
   target: DecodoTarget;
-  url: string;
+  /** Required for reddit/universal targets */
+  url?: string;
+  /** Required for the google_search target — mutually exclusive with `url` */
+  query?: string;
+  /** google_search only: request Decodo's structured/parsed SERP JSON */
+  parse?: boolean;
   locale?: string;
 }
 
@@ -55,6 +60,26 @@ export interface ScrapeSubredditParams {
 }
 
 export interface ScrapePostParams {
+  subreddit: string;
+  postId: string;
+}
+
+// ---------------------------------------------------------------------------
+// Google-search-assisted discovery (Decodo `google_search` target)
+// ---------------------------------------------------------------------------
+
+/** One organic result from Decodo's parsed Google SERP output. */
+export interface GoogleOrganicResult {
+  pos: number;
+  pos_overall?: number;
+  title: string;
+  url: string;
+  desc?: string;
+  url_shown?: string;
+}
+
+/** A Reddit post identified from a Google search result, before hydration. */
+export interface GoogleDiscoveredPost {
   subreddit: string;
   postId: string;
 }

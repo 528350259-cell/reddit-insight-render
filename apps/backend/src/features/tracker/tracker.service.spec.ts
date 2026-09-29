@@ -79,6 +79,7 @@ describe('TrackerService', () => {
             searchReddit: jest.fn().mockResolvedValue([]),
             scrapeSubreddit: jest.fn().mockResolvedValue([]),
             scrapePost: jest.fn().mockResolvedValue({ ...makePost('default'), comments: [] }),
+            discoverViaGoogle: jest.fn().mockResolvedValue([]),
           },
         },
         {

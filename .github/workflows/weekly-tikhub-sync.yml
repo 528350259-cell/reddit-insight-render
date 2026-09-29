@@ -1,0 +1,38 @@
+name: Weekly TikHub market sync
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # 09:00 Asia/Shanghai (UTC+8), every Monday — matches the "每周更新一次"
+    # cadence agreed for TikHub data (paid, rate-limited API; not real-time).
+    - cron: "0 1 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly-tikhub-sync
+  cancel-in-progress: false
+
+jobs:
+  run-tikhub-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      API_BASE_URL: ${{ vars.REDDIT_INSIGHT_API_URL || 'https://reddit-insight-render.netlify.app/api' }}
+      SYNC_TOKEN: ${{ secrets.TIKHUB_SYNC_TOKEN }}
+    steps:
+      - name: Guard against missing secret
+        run: |
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo "::error::Repository secret TIKHUB_SYNC_TOKEN is not set. Add it under Settings > Secrets and variables > Actions, then rerun."
+            exit 1
+          fi
+
+      - name: Trigger TikHub sync for all tracked keywords
+        run: |
+          curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 15 \
+            -X POST "$API_BASE_URL/admin/tikhub/sync" \
+            -H "X-Sync-Token: $SYNC_TOKEN" \
+            -o sync-result.json
+          cat sync-result.json

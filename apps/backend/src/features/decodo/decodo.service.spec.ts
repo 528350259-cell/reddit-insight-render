@@ -555,4 +555,86 @@ describe('DecodoService', () => {
       expect(result.comments[1].id).toBe('c2');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // searchGoogleForReddit()
+  // ---------------------------------------------------------------------------
+
+  describe('searchGoogleForReddit()', () => {
+    // Mirrors the real (double-nested) Decodo google_search shape: the outer
+    // "results" carries pagination metadata, the inner "results" is the SERP
+    // payload. A single-level mock here would validate the wrong contract.
+    function makeOrganic(urls: string[]) {
+      return {
+        results: {
+          last_visible_page: 1,
+          page: 1,
+          results: {
+            organic: urls.map((url, i) => ({ pos: i + 1, title: `Result ${i + 1}`, url })),
+          },
+        },
+      };
+    }
+
+    it('appends "reddit" to the query instead of using a site: filter', async () => {
+      fetchSpy.mockResolvedValue(makeDecodoFetch(makeOrganic([]), 200));
+
+      await service.searchGoogleForReddit('best noise cancelling headphones');
+
+      const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+      expect(body.target).toBe('google_search');
+      expect(body.query).toBe('best noise cancelling headphones reddit');
+      expect(body.parse).toBe(true);
+      expect(body.url).toBeUndefined();
+    });
+
+    it('extracts subreddit + postId from organic Reddit result URLs', async () => {
+      fetchSpy.mockResolvedValue(
+        makeDecodoFetch(
+          makeOrganic([
+            'https://www.instagram.com/someone/',
+            'https://www.reddit.com/r/headphones/comments/1kp55ia/my_subjective_ranking/',
+            'https://www.reddit.com/r/BuyItForLife/comments/1rs7mq6/best_headphones/',
+          ]),
+          200,
+        ),
+      );
+
+      const result = await service.searchGoogleForReddit('best headphones');
+
+      expect(result).toEqual([
+        { subreddit: 'headphones', postId: '1kp55ia' },
+        { subreddit: 'BuyItForLife', postId: '1rs7mq6' },
+      ]);
+    });
+
+    it('dedupes repeated post IDs and caps to the given limit', async () => {
+      fetchSpy.mockResolvedValue(
+        makeDecodoFetch(
+          makeOrganic([
+            'https://www.reddit.com/r/a/comments/p1/title/',
+            'https://www.reddit.com/r/a/comments/p1/title/', // duplicate
+            'https://www.reddit.com/r/b/comments/p2/title/',
+            'https://www.reddit.com/r/c/comments/p3/title/',
+          ]),
+          200,
+        ),
+      );
+
+      const result = await service.searchGoogleForReddit('query', 2);
+
+      expect(result).toHaveLength(2);
+      expect(result.map((r) => r.postId)).toEqual(['p1', 'p2']);
+    });
+
+    it('returns an empty array when no organic results contain Reddit links', async () => {
+      fetchSpy.mockResolvedValue(
+        makeDecodoFetch(makeOrganic(['https://www.youtube.com/watch?v=x']), 200),
+      );
+
+      const result = await service.searchGoogleForReddit('query');
+
+      expect(result).toEqual([]);
+    });
+  });
 });
