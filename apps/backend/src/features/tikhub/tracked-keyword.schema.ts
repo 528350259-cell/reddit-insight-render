@@ -10,7 +10,7 @@ export class TrackedKeywordEntity {
   @Prop({ required: true, trim: true })
   keyword: string;
 
-  @Prop({ required: true, default: 'US' })
+  @Prop({ type: String, required: true, default: 'US' })
   region: TikhubRegion;
 }
 
